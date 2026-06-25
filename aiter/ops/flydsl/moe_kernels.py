@@ -459,6 +459,7 @@ def compile_flydsl_moe_stage1(
     xcd_swizzle: int = 0,
     swiglu_limit: float = 0.0,
     scale_scheme: str = "",
+    n_per_wg: int = 1,
 ):
     """Compile stage1 kernel (cached via underlying lru_cache)."""
     # fp8/fp8 defaults to per-1x128 blockscale; only the explicit mxfp8
@@ -546,6 +547,7 @@ def compile_flydsl_moe_stage1(
             inter_dim_pad=inter_dim_pad,
             enable_bias=enable_bias,
             swiglu_limit=swiglu_limit,
+            n_per_wg=n_per_wg,
         )
     else:
         raise ValueError(

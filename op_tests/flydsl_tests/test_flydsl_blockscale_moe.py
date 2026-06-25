@@ -499,6 +499,7 @@ def _launch_flydsl_stage1(
     act: str = "silu",
     num_iters: int = 10,
     num_warmup: int = 3,
+    n_per_wg: int = 1,
 ):
     """Compile + run FlyDSL stage1 via the aiter dispatcher; return (out, us)."""
     tokens = data["tokens"]
@@ -539,6 +540,7 @@ def _launch_flydsl_stage1(
         out_dtype="f16",
         act=act,
         waves_per_eu=waves_per_eu,
+        n_per_wg=n_per_wg,
     )
     stream = torch.cuda.current_stream()
     w1_shuf_flat = data["w1_bq_shuf"].view(-1)
