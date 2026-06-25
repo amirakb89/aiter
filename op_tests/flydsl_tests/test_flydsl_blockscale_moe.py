@@ -588,6 +588,7 @@ def _launch_flydsl_stage2(
     num_valid,
     num_iters: int = 10,
     num_warmup: int = 3,
+    n_per_wg: int = 1,
 ):
     tokens = data["tokens"]
     model_dim = data["model_dim"]
@@ -620,6 +621,7 @@ def _launch_flydsl_stage2(
         a_dtype="fp8",
         b_dtype="fp8",
         out_dtype="f16",
+        n_per_wg=n_per_wg,
     )
     stream = torch.cuda.current_stream()
     w2_shuf_flat = data["w2_bq_shuf"].view(-1)
