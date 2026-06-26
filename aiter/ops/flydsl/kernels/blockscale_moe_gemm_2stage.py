@@ -6612,7 +6612,8 @@ def compile_moe_blockscale_gemm_fused(
                     # pressure. `by` is a runtime index; body uses no const_expr on by.
                     for _s2_by_i in range(model_dim // tile_n):
                         _moe_gemm2_then_body(arith.index_cast(T.index, _s2_by_i))
-                        gpu.barrier()
+                        if const_expr(not bool(int(os.environ.get("FUSED_NO_LOOP_BARRIER", "0")))):
+                            gpu.barrier()
                 else:
                     for _s2_by_i in range_constexpr(model_dim // tile_n):
                         _moe_gemm2_then_body(fx.Index(_s2_by_i))
