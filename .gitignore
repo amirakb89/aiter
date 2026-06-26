@@ -92,3 +92,6 @@ aiter/ops/opus/configs/
 # vim swaps
 *.swo
 *.swp
+
+# AMD-internal docs bundle (do not commit)
+aiter_docs_bundle.tgz
