@@ -907,6 +907,7 @@ def select_mega_moe_config(
     model_dim: int = 7168,
     inter_dim: int = 3072,
     world_size: int = 8,
+    fixed_slot_indexed: bool = False,
 ) -> MegaMoEConfig:
     if a_dtype not in SUPPORTED_ACTIVATION_DTYPES:
         raise ValueError(f"unsupported activation dtype={a_dtype!r}")
@@ -1026,6 +1027,11 @@ def select_mega_moe_config(
         # is the race-safe path (only the SYNC reg->LDS copy races at SBM32+nw8)
         # and it reclaims the small-bucket cost that forcing sync would add.
         config = _replace_config(config, stage1={"async_a_copy": True})
+    if fixed_slot_dispatch and fixed_slot_indexed:
+        # GEMM1 gathers fixed-slot indexed rows through srcmap. The LDS-DMA copy
+        # hides that lookup; the synchronous reg->LDS copy (tuned for buckets
+        # 16-128) made Stage1 6-10% slower than route-major on v4_pro a8w4.
+        config = _replace_config(config, stage1={"async_a_copy": True})
     if config.stage2.aligned_pair and config.p2p_quant != P2P_QUANT_FP8_BLOCKWISE:
         # The aligned-pair Stage2 kernel only emits the FP8 P2P row layout, so
         # reject the combination here instead of at launch.
@@ -1045,6 +1051,7 @@ def build_mega_moe_bundle_plan(
     model_dim: int = 7168,
     inter_dim: int = 3072,
     world_size: int = 8,
+    fixed_slot_indexed: bool = False,
 ) -> MegaMoEBundlePlan:
     """Deduplicate variants while keeping Stage1/Stage2 selection atomic."""
     if mtpr <= 0 or mtpr & (mtpr - 1):
@@ -1073,6 +1080,7 @@ def build_mega_moe_bundle_plan(
             model_dim=model_dim,
             inter_dim=inter_dim,
             world_size=world_size,
+            fixed_slot_indexed=fixed_slot_indexed,
         )
         stage1_key = stage1_bundle_identity(config.stage1)
         stage1_id = stage1_ids.setdefault(stage1_key, len(stage1_variants))

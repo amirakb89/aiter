@@ -72,6 +72,7 @@ class MegaMoEV2:
             raise ValueError(f"MegaMoEV2 act must be 'silu' or 'situv2', got {self.act!r}")
         if self.act == "situv2" and (self.situ_beta <= 0.0 or self.situ_linear_beta <= 0.0):
             raise ValueError("situv2 requires positive situ_beta / situ_linear_beta")
+        fixed_slot_indexed = envs.AITER_MEGA_FIXED_SLOT_INDEXED
         self._bundle_plan = build_mega_moe_bundle_plan(
             self.mtpr,
             a_dtype=self._a_dtype,
@@ -80,6 +81,7 @@ class MegaMoEV2:
             model_dim=self.model_dim,
             inter_dim=self.inter_dim,
             world_size=self.world_size,
+            fixed_slot_indexed=fixed_slot_indexed,
         )
         self._active_bundle_entry = None
         self._initial_fanout_masks = tuple(int(mask) for mask in fanout_masks)
@@ -95,6 +97,7 @@ class MegaMoEV2:
         # makes uneven-rank dynamic prefill safe.
         capacity_tile_m = 128 if compact else 32
         self._s1_fixed_slot = not compact
+        self._s1_fixed_slot_indexed = self._s1_fixed_slot and fixed_slot_indexed
         self._s1_scale_dim = self.model_dim // 32
         # fmt: off
         self.comb_cfg = FlyDSLDispatchCombineConfig(rank=self.rank, world_size=self.world_size,
@@ -103,7 +106,8 @@ class MegaMoEV2:
             dispatch_dtype=self._a_torch_dtype, scale_dim=self._s1_scale_dim, scale_type_size=1,
             enable_std_moe=False, enable_group_major=True, gm_unit_size=capacity_tile_m,
             gm_scheme=mega_scheme, gm_compact=compact,
-            gm_indexed_payload=compact and self.mtpr >= INDEXED_PAYLOAD_MIN_MTPR,
+            gm_indexed_payload=self._s1_fixed_slot_indexed
+            or (compact and self.mtpr >= INDEXED_PAYLOAD_MIN_MTPR),
             max_total_recv_tokens=self.world_size)
         # fmt: on
         self.comb_op = FlyDSLDispatchCombineIntraNodeOp(self.comb_cfg)
@@ -144,7 +148,7 @@ class MegaMoEV2:
         self._s1_w1_scale = w1_scale.contiguous().view(torch.uint8)
         op = self.comb_op._gm
         assert op is not None, "combine op was built without enable_group_major"
-        expected_indexed_payload = (
+        expected_indexed_payload = self._s1_fixed_slot_indexed or (
             not self._s1_fixed_slot and self.mtpr >= INDEXED_PAYLOAD_MIN_MTPR
         )
         if op.indexed_payload != expected_indexed_payload:
@@ -493,6 +497,7 @@ class MegaMoEV2:
             fuse_mtpr=self.mtpr,
             fuse_scale_dim=self._s1_scale_dim,
             fixed_slot_dispatch=self._s1_fixed_slot,
+            fixed_slot_indexed=self._s1_fixed_slot_indexed,
             num_cu=self._s1_num_cu,
             tile_state_stride=self._s1_tile_state_stride,
             variants=self._bundle_plan.stage1_variants,
@@ -609,7 +614,9 @@ class MegaMoEV2:
         # (see mega_moe_stage1), so the route-major capacity guard below never
         # fires there; it stays as a defensive check for a future route-major
         # variant at this class.
-        indexed_variant = self.mtpr >= INDEXED_PAYLOAD_MIN_MTPR
+        indexed_variant = (
+            self._s1_fixed_slot_indexed or self.mtpr >= INDEXED_PAYLOAD_MIN_MTPR
+        )
         if self._s1_op.indexed_payload and not indexed_variant:
             route_rows = (
                 self.world_size * cur_tok * self.topk
@@ -643,6 +650,7 @@ class MegaMoEV2:
             "fuse_mtpr": self.mtpr,
             "fuse_scale_dim": self._s1_scale_dim,
             "fixed_slot_dispatch": self._s1_fixed_slot,
+            "fixed_slot_indexed": self._s1_fixed_slot_indexed,
             "num_cu": self._s1_num_cu,
             "swiglu_limit": self.swiglu_limit,
             "act": self.act,

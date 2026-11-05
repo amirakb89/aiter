@@ -381,10 +381,6 @@ class FlyDSLDispatchGroupMajorOp:
         # Compact mode uses a count-first layout without per-expert reservations.
         self.compact = bool(compact)
         self.indexed_payload = bool(indexed_payload)
-        if self.indexed_payload and not self.compact:
-            raise ValueError(
-                "indexed payload storage requires compact group-major mode"
-            )
         self.rank = rank
         self.npes = world_size
         self.hidden = hidden_dim

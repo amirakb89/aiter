@@ -88,7 +88,7 @@ def _validate_dispatch_capacity(
 def compile_mega_moe_stage1(
     *, model_dim: int, inter_dim: int, rank: int, experts_per_rank: int, fuse_npes: int, fuse_topk: int,
     fuse_cap: int, fuse_mtpr: int, fuse_scale_dim: int, fixed_slot_dispatch: bool, sort_block_m: int = 32,
-    tile_n: int = 256, tile_k: int = 256, num_waves: int = 4, grid_mult: int = 8,
+    fixed_slot_indexed: bool = False, tile_n: int = 256, tile_k: int = 256, num_waves: int = 4, grid_mult: int = 8,
     pipe_weights: bool = True, mfma_amajor: bool = False, swizzle_a: bool = True,
     async_a_copy: bool = False, use_tile_resource: bool = True,
     waves_per_eu_hint: int = 2, num_cu: int = 256, num_dispatch_cu: int = 32,
@@ -189,8 +189,13 @@ def compile_mega_moe_stage1(
     # token) regardless of sort_block_m. The receive layout must not depend on a
     # per-rank quantity: a route-major rank would need one row per (token,expert),
     # which cross-rank token skew can push past the shared payload buffer.
+    # Fixed-slot opts in with fixed_slot_indexed: route slots keep srcmap and
+    # weights, and each destination receives a token's row once instead of once
+    # per routed expert.
     indexed_payload = (
-        not fixed_slot_dispatch and fuse_mtpr >= INDEXED_PAYLOAD_MIN_MTPR
+        fixed_slot_indexed
+        if fixed_slot_dispatch
+        else fuse_mtpr >= INDEXED_PAYLOAD_MIN_MTPR
     )
     source_rows = fz_npes * fz_mtpr + 1 if indexed_payload else 0
     if indexed_payload and source_rows * model_dim >= _BUFFER_OFFSET_ABI_BYTES:
@@ -450,7 +455,7 @@ def compile_mega_moe_stage1(
                     fz_scale_n_i32=fz_scale_n_i32, fz_enable_scales=fz_enable_scales, addr_disp=addr_disp,
                     addr_in_tok=addr_in_tok, addr_in_idx=addr_in_idx, addr_in_wts=addr_in_wts, addr_in_sc=addr_in_sc,
                     i32_cur_tok=i32_cur_tok, dispatch_blocks=dispatch_blocks, producer_slot=producer_slot,
-                    parity=payload_parity, expected=payload_expected,
+                    parity=payload_parity, expected=payload_expected, indexed_payload=indexed_payload,
                 )
             else:
                 if tid == fx.Int32(0):
@@ -757,6 +762,7 @@ def compile_mega_moe_stage1_bundle(
     num_cu: int,
     tile_state_stride: int,
     variants: tuple[Stage1Config, ...],
+    fixed_slot_indexed: bool = False,
     swiglu_limit: float = 0.0,
     act: str = "silu",
     situ_beta: float = 1.0,
@@ -780,6 +786,7 @@ def compile_mega_moe_stage1_bundle(
             fuse_mtpr=fuse_mtpr,
             fuse_scale_dim=fuse_scale_dim,
             fixed_slot_dispatch=fixed_slot_dispatch,
+            fixed_slot_indexed=fixed_slot_indexed,
             sort_block_m=config.sort_block_m,
             tile_n=config.tile_n,
             tile_k=config.tile_k,
@@ -884,7 +891,7 @@ def run_mega_moe_stage1(out, x, w, scale_x, scale_w, sorted_token_ids, expert_id
     tokens, addr_disp, i32_cur_tok, addr_in_tok, addr_in_idx, addr_in_wts, addr_in_sc,
     addr_parity, addr_expected, stream, *, model_dim, inter_dim, rank, experts_per_rank, fuse_npes,
     fuse_topk, fuse_cap, fuse_mtpr, fuse_scale_dim, fixed_slot_dispatch, num_cu,
-    sort_block_m=32, tile_n=256, tile_k=256, num_waves=4, grid_mult=4, pipe_weights=True,
+    fixed_slot_indexed=False, sort_block_m=32, tile_n=256, tile_k=256, num_waves=4, grid_mult=4, pipe_weights=True,
     mfma_amajor=False, swizzle_a=True, async_a_copy=False, num_dispatch_cu=32,
     use_tile_resource=True, waves_per_eu_hint=2,
     b_nt=-1, work_shards=None,
@@ -895,7 +902,7 @@ def run_mega_moe_stage1(out, x, w, scale_x, scale_w, sorted_token_ids, expert_id
         model_dim=model_dim, inter_dim=inter_dim, rank=rank, experts_per_rank=experts_per_rank,
         fuse_npes=fuse_npes, fuse_topk=fuse_topk, fuse_cap=fuse_cap, fuse_mtpr=fuse_mtpr,
         fuse_scale_dim=fuse_scale_dim, fixed_slot_dispatch=fixed_slot_dispatch,
-        sort_block_m=sort_block_m, tile_n=tile_n, tile_k=tile_k, num_waves=num_waves,
+        fixed_slot_indexed=fixed_slot_indexed, sort_block_m=sort_block_m, tile_n=tile_n, tile_k=tile_k, num_waves=num_waves,
         grid_mult=grid_mult, pipe_weights=pipe_weights, mfma_amajor=mfma_amajor, swizzle_a=swizzle_a,
         async_a_copy=async_a_copy, use_tile_resource=use_tile_resource,
         waves_per_eu_hint=waves_per_eu_hint, num_cu=num_cu, num_dispatch_cu=num_dispatch_cu,

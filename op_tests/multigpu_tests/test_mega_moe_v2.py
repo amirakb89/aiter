@@ -132,6 +132,7 @@ def _make_inputs(
     force_padding_boundary,
     concentrate_experts=0,
     zipf=0.0,
+    invalid_slots=False,
 ):
     generator = torch.Generator(device=device).manual_seed(seed + rank)
     x = torch.randn(
@@ -160,6 +161,12 @@ def _make_inputs(
             .expand(tokens, topk)
             .clone()
         )
+    if invalid_slots:
+        # Partially invalid tokens: slot 0 on odd tokens and the middle slot on
+        # every third token are -1, while the token's other slots stay valid.
+        token = torch.arange(tokens, device=device)
+        ids[token % 2 == 1, 0] = -1
+        ids[token % 3 == 0, topk // 2] = -1
     small_pair_boundary = (
         force_fanout_boundary
         and not (inject_invalid_route or force_padding_boundary)
@@ -598,6 +605,12 @@ def main():
     parser.add_argument("--zipf", type=float, default=0.0)
     parser.add_argument("--force-fanout-boundary", action="store_true")
     parser.add_argument("--inject-invalid-route", action="store_true")
+    parser.add_argument(
+        "--invalid-slots",
+        action="store_true",
+        help="Set some top-k slots of valid tokens to -1 (any topk); turns on "
+        "AITER_MEGA_COMBINE_MASK so combine skips them",
+    )
     parser.add_argument("--force-padding-boundary", action="store_true")
     parser.add_argument(
         "--pad-tail-rows",
@@ -624,6 +637,8 @@ def main():
     if not batch_sizes or min(batch_sizes) <= 0:
         raise ValueError("--bs-list must contain positive integers")
     rank_tokens = [int(value) for value in args.rank_tokens.split(",") if value]
+    if args.invalid_slots:
+        os.environ["AITER_MEGA_COMBINE_MASK"] = "1"
 
     rank, world, device = _setup_dist()
     try:
@@ -671,6 +686,7 @@ def main():
             force_padding_boundary=args.force_padding_boundary,
             concentrate_experts=args.concentrate_experts,
             zipf=args.zipf,
+            invalid_slots=args.invalid_slots,
         )
         ref_weights = w1_q, w1_ref_scale, w2_q, w2_ref_scale
         # MegaMoE's producer/consumer wire geometry is rank-invariant. A

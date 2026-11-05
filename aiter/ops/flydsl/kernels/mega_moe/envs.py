@@ -22,6 +22,10 @@ environment_variables: dict[str, tuple[Callable[[str], Any], str]] = {
     # exchange). 511 / 1023 / 2047 admit the 256 / 512 / 1024-token capacities,
     # validated on the EP8 v4_pro layout. Read once, at import.
     "AITER_MEGA_FIXED_SLOT_MAX_MTPR": (int, "255"),
+    # Fixed-slot sends each token row once per destination rank (source-keyed
+    # rows, GEMM1 gathers through srcmap) instead of once per routed expert.
+    # Read when an instance is built.
+    "AITER_MEGA_FIXED_SLOT_INDEXED": (_flag, "0"),
     # Default of forward(mask_invalid_slots=...): combine skips top-k slots with
     # id -1. Off because the id check costs prefill time; callers that pad with
     # -1 ask for it per call.

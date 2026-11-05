@@ -8,6 +8,7 @@ from enum import IntEnum
 import flydsl.compiler as flyc
 import flydsl.expr as fx
 from flydsl.expr import const_expr, range_constexpr
+from flydsl.expr.rocdl import ballot
 from flydsl.expr.typing import T
 
 from .. import communication_ops_utils as comm_ops
@@ -456,10 +457,17 @@ def _publish_tile_range(
 def emit_direct_fixed_slot_payload(
     *, num_waves, fz_npes, fz_epr, fz_k, fz_cap, fz_mtpr, fz_rank, fz_total_experts, fz_nbytes, fz_n_i32,
     fz_scale_n_i32, fz_enable_scales, addr_disp, addr_in_tok, addr_in_idx, addr_in_wts, addr_in_sc,
-    i32_cur_tok, dispatch_blocks, producer_slot, parity, expected,
+    i32_cur_tok, dispatch_blocks, producer_slot, parity, expected, indexed_payload=False,
 ):
 # fmt: on
-    """Allocate and publish routes directly into destination fixed slots."""
+    """Allocate and publish routes directly into destination fixed slots.
+
+    With ``indexed_payload`` the route slot still carries srcmap and weight, but
+    the activation row and its scales go to the source-keyed row
+    ``rank * mtpr + token``, once per destination: only the token's first valid
+    route to that destination copies them, and GEMM1 gathers through srcmap.
+    """
+    assert not indexed_payload or fz_k <= 64, "duplicate-route ballot covers 64 top-k slots"
     dispatch_table = ptr_buf_tensor(addr_disp, fx.Int64)
 
     def dp(i):
@@ -507,6 +515,20 @@ def emit_direct_fixed_slot_payload(
         local_expert = safe_expert - destination * fx.Int32(fz_epr)
         offset_lane = fx.Int32(0)
         assigned = valid_expert & (destination % fx.Int32(destination_groups) == producer_group)
+        if const_expr(indexed_payload):
+            # Lane j < topk_slot checks whether route j of this token already
+            # sends the row to the same destination.
+            earlier = lane < topk_slot
+            earlier_expert = idx_buffer[
+                source_token * fx.Int32(fz_k) + earlier.select(lane, fx.Int32(0))
+            ]
+            earlier_same = (
+                earlier
+                & (earlier_expert >= 0)
+                & (earlier_expert < fx.Int32(fz_total_experts))
+                & (earlier_expert // fx.Int32(fz_epr) == destination)
+            )
+            duplicate_routes = ballot(T.i64, earlier_same)
         if lane == fx.Int32(0):
             if assigned:
                 remote_running = running_table[destination]
@@ -518,11 +540,17 @@ def emit_direct_fixed_slot_payload(
         expert_offset = fx.Int32(fx.rocdl.readlane(T.i32, offset_lane, 0))
         publish = assigned & (expert_offset < fx.Int32(fz_cap))
         payload_row = local_expert * fx.Int32(fz_cap) + expert_offset
+        if const_expr(indexed_payload):
+            copy_row = assigned & (duplicate_routes == 0)
+            input_row = fx.Int32(fz_rank * fz_mtpr) + source_token
+        else:
+            copy_row = publish
+            input_row = payload_row
 
-        if publish:
+        if copy_row:
             remote_token = token_table[destination]
             destination_buffer = ptr_buf_tensor(
-                remote_token + fx.Int64(payload_row) * fx.Int64(fz_nbytes),
+                remote_token + fx.Int64(input_row) * fx.Int64(fz_nbytes),
                 fx.Int32,
                 unit_elems=4,
             )
@@ -546,9 +574,10 @@ def emit_direct_fixed_slot_payload(
                     ]
                     remote_scale = scale_table[destination]
                     ptr_buf_tensor(remote_scale, fx.Int32)[
-                        payload_row * fx.Int32(fz_scale_n_i32) + lane
+                        input_row * fx.Int32(fz_scale_n_i32) + lane
                     ] = scale
 
+        if publish:
             if lane == fx.Int32(0):
                 weight = weight_buffer[wk]
                 weight_bits = fx.Float32(weight).bitcast(fx.Int32)
